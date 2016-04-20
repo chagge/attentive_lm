@@ -234,13 +234,16 @@ class LMModel(object):
 
         return batch_lm_inputs, batch_lm_targets, batch_weights, n_target_words
 
-    def train_step(self, session, lm_inputs, lm_targets, mask, op=None):
+    def train_step(self, session, lm_inputs, lm_targets, mask, num_steps=None, op=None):
 
         if op is None:
             op = self.train_op
 
+        if num_steps is None:
+            num_steps = self.num_steps
+
         input_feed = {}
-        for l in xrange(self.num_steps):
+        for l in xrange(num_steps):
             input_feed[self.input_data[l].name] = lm_inputs[l]
             input_feed[self.targets[l].name] = lm_targets[l]
             input_feed[self.mask[l].name] = mask[l]

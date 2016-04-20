@@ -52,7 +52,7 @@ tf.app.flags.DEFINE_integer('steps_verbosity', 10, 'How many training steps to d
 # pacience flags (learning_rate decay and early stop)
 flags.DEFINE_integer('lr_rate_patience', 3, 'How many training steps to monitor.')
 flags.DEFINE_integer('early_stop_patience', 20, 'How many training steps to monitor.')
-flags.DEFINE_integer('early_stop_after_epoch', 20, 'Start monitoring early_stop after this epoch.')
+flags.DEFINE_integer('early_stop_after_epoch', 1, 'Start monitoring early_stop after this epoch.')
 flags.DEFINE_boolean('eval_after_each_epoch', True, 'Run eval after each epoch.')
 flags.DEFINE_boolean('save_best_model', True, 'Set to True to save the best model even if not using early stop.')
 

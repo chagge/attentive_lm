@@ -109,19 +109,27 @@ def train_lm(FLAGS=None):
 
                 if FLAGS.eval_after_each_epoch:
 
-                    valid_batch_size = len(valid_data)
-                    valid_inputs, valid_targets, valid_mask, _ = model.get_train_batch(valid_data, batch=valid_batch_size)
+                    print("\nValidating:\n")
 
-                    valid_inputs = numpy.concatenate(valid_inputs)
-                    valid_targets = numpy.concatenate(valid_targets)
-                    valid_mask = numpy.concatenate(valid_mask)
+                    valid_batch_size = len(valid_data)
+                    valid_steps = valid_batch_size / FLAGS.batch_size
+                    last_step = valid_batch_size % FLAGS.batch_size
 
                     avg_eval_loss = 0.0
 
-                    for i in xrange(valid_inputs.shape[1]):
+                    for i in xrange(valid_steps + 1):
 
-                        valid_cost, _ = model.train_step(session=sess, lm_inputs=valid_inputs[:, i], lm_targets=valid_targets[:, i],
-                                                         mask=valid_mask[:, i], op=tf.no_op())
+                        b = FLAGS.batch_size
+                        if i == valid_steps:
+                            d = valid_data[-last_step:]
+                            valid_inputs, valid_targets, valid_mask, _ = model.get_train_batch(d, batch=last_step)
+                        else:
+                            d = valid_data[(i * b):((i + 1) * b)]
+                            valid_inputs, valid_targets, valid_mask, _ = model.get_train_batch(d, batch=b)
+
+                        valid_cost, _ = model.train_step(session=sess, lm_inputs=valid_inputs,
+                                                         lm_targets=valid_targets,
+                                                         mask=valid_mask, op=tf.no_op())
 
                         avg_eval_loss += valid_cost
 
@@ -165,24 +173,33 @@ def train_lm(FLAGS=None):
 
             if current_step % FLAGS.steps_per_validation == 0:
 
-                valid_batch_size = len(valid_data)
-                valid_inputs, valid_targets, valid_mask, _ = model.get_train_batch(valid_data, batch=valid_batch_size)
+                print("\nValidating:\n")
 
-                valid_inputs = numpy.concatenate(valid_inputs)
-                valid_targets = numpy.concatenate(valid_targets)
-                valid_mask = numpy.concatenate(valid_mask)
+                valid_batch_size = len(valid_data)
+                valid_steps = valid_batch_size / FLAGS.batch_size
+                last_step = valid_batch_size % FLAGS.batch_size
 
                 avg_eval_loss = 0.0
 
-                for i in xrange(valid_inputs.shape[1]):
-                    valid_cost, _ = model.train_step(session=sess, lm_inputs=valid_inputs[:, i],
-                                                     lm_targets=valid_targets[:, i],
-                                                     mask=valid_mask[:, i], op=tf.no_op())
+                for i in xrange(valid_steps + 1):
+
+                    b = FLAGS.batch_size
+                    if i == valid_steps:
+                        d = valid_data[-last_step:]
+                        valid_inputs, valid_targets, valid_mask, _ = model.get_train_batch(d, batch=last_step)
+                    else:
+                        d = valid_data[(i * b):((i + 1) * b)]
+                        valid_inputs, valid_targets, valid_mask, _ = model.get_train_batch(d,  batch=b)
+
+                    valid_cost, _ = model.train_step(session=sess, lm_inputs=valid_inputs,
+                                                     lm_targets=valid_targets,
+                                                     mask=valid_mask, op=tf.no_op())
 
                     avg_eval_loss += valid_cost
 
                 estop = FLAGS.early_stop_patience
                 avg_ppx = math.exp(avg_eval_loss) if avg_eval_loss < 300 else float('inf')
+
 
                 if avg_ppx > 1000.0:
                     print('\n  eval: averaged perplexity > 1000.0')
@@ -227,23 +244,28 @@ def train_lm(FLAGS=None):
 
             print("Final validation:")
 
-            print('\n')
-
             valid_batch_size = len(valid_data)
-            valid_inputs, valid_targets, valid_mask, _ = model.get_train_batch(valid_data, batch=valid_batch_size)
-
-            valid_inputs = numpy.concatenate(valid_inputs)
-            valid_targets = numpy.concatenate(valid_targets)
-            valid_mask = numpy.concatenate(valid_mask)
+            valid_steps = valid_batch_size / FLAGS.batch_size
+            last_step = valid_batch_size % FLAGS.batch_size
 
             avg_eval_loss = 0.0
 
-            for i in xrange(valid_inputs.shape[1]):
-                valid_cost, _ = model.train_step(session=sess, lm_inputs=valid_inputs[:, i],
-                                                 lm_targets=valid_targets[:, i],
-                                                 mask=valid_mask[:, i], op=tf.no_op())
+            for i in xrange(valid_steps + 1):
+
+                b = FLAGS.batch_size
+                if i == valid_steps:
+                    d = valid_data[-last_step:]
+                    valid_inputs, valid_targets, valid_mask, _ = model.get_train_batch(d, batch=last_step)
+                else:
+                    d = valid_data[(i * b):((i + 1) * b)]
+                    valid_inputs, valid_targets, valid_mask, _ = model.get_train_batch(d, batch=b)
+
+                valid_cost, _ = model.train_step(session=sess, lm_inputs=valid_inputs,
+                                                 lm_targets=valid_targets,
+                                                 mask=valid_mask, op=tf.no_op())
 
                 avg_eval_loss += valid_cost
+
             avg_ppx = math.exp(avg_eval_loss) if avg_eval_loss < 300 else float('inf')
 
             if avg_ppx > 1000.0:
@@ -252,19 +274,27 @@ def train_lm(FLAGS=None):
                 print('\n  eval: averaged valid. perplexity %.8f' % avg_ppx)
             print('  eval: averaged valid. loss %.8f\n' % avg_eval_loss)
 
-            test_batch_size = len(test_data)
-            test_inputs, test_targets, test_mask, _ = model.get_train_batch(test_data, batch=test_batch_size)
+            print("\n##### Test Results: #####\n")
 
-            test_inputs = numpy.concatenate(test_inputs)
-            test_targets = numpy.concatenate(test_targets)
-            test_mask = numpy.concatenate(test_mask)
+            test_batch_size = len(test_data)
+            test_steps = test_batch_size / FLAGS.batch_size
+            last_step = test_batch_size % FLAGS.batch_size
 
             avg_test_loss = 0.0
 
-            for i in xrange(valid_inputs.shape[1]):
-                test_cost, _ = model.train_step(session=sess, lm_inputs=test_inputs[:, i],
-                                                 lm_targets=test_targets[:, i],
-                                                 mask=test_mask[:, i], op=tf.no_op())
+            for i in xrange(test_steps + 1):
+
+                b = FLAGS.batch_size
+                if i == test_steps:
+                    d = test_data[-last_step:]
+                    test_inputs, test_targets, test_mask, _ = model.get_train_batch(d, batch=last_step)
+                else:
+                    d = test_data[(i * b):((i + 1) * b)]
+                    test_inputs, test_targets, test_mask, _ = model.get_train_batch(d, batch=b)
+
+                test_cost, _ = model.train_step(session=sess, lm_inputs=test_inputs,
+                                                lm_targets=test_targets,
+                                                mask=test_mask, op=tf.no_op())
 
                 avg_test_loss += test_cost
 
