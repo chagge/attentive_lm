@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-import data_utils
+import codecs
 import math
 import numpy
 import os
@@ -8,7 +8,7 @@ import time
 import sys
 from tensorflow.python.platform import gfile
 import build_ops
-from data_utils import read_lm_data
+from data_utils import read_lm_data, prepare_lm_data
 # from six.moves import xrange
 
 
@@ -17,7 +17,7 @@ def train_lm(FLAGS=None):
     assert FLAGS is not None
 
     print('Preparing data in %s' % FLAGS.data_dir)
-    src_train, src_dev, src_test = data_utils.prepare_lm_data(FLAGS)
+    src_train, src_dev, src_test = prepare_lm_data(FLAGS)
 
     with tf.Session(config=tf.ConfigProto(allow_soft_placement=True, log_device_placement=False)) as sess:
 
@@ -30,6 +30,7 @@ def train_lm(FLAGS=None):
         print('Reading development and training data (limit: %d).' % FLAGS.max_train_data_size)
 
         valid_data = read_lm_data(src_dev, FLAGS=FLAGS)
+        test_data = read_lm_data(src_test, FLAGS=FLAGS)
         train_data = read_lm_data(src_train, max_size=FLAGS.max_train_data_size, FLAGS=FLAGS)
         train_total_size = len(train_data)
 
@@ -106,6 +107,35 @@ def train_lm(FLAGS=None):
                 ep = model.epoch.eval()
                 print("Epoch %d finished..." % (ep - 1))
 
+                if FLAGS.eval_after_each_epoch:
+
+                    valid_batch_size = len(valid_data)
+                    valid_inputs, valid_targets, valid_mask, _ = model.get_train_batch(valid_data, batch=valid_batch_size)
+
+                    valid_inputs = numpy.concatenate(valid_inputs)
+                    valid_targets = numpy.concatenate(valid_targets)
+                    valid_mask = numpy.concatenate(valid_mask)
+
+                    avg_eval_loss = 0.0
+
+                    for i in xrange(valid_inputs.shape[1]):
+
+                        valid_cost, _ = model.train_step(session=sess, lm_inputs=valid_inputs[:, i], lm_targets=valid_targets[:, i],
+                                                         mask=valid_mask[:, i], op=tf.no_op())
+
+                        avg_eval_loss += valid_cost
+
+                    avg_ppx = math.exp(avg_eval_loss) if avg_eval_loss < 300 else float('inf')
+                    best_loss = model.best_eval_loss.eval()
+                    best_ppx = math.exp(best_loss) if best_loss < 300 else float('inf')
+
+                    f = codecs.open(FLAGS.best_models_dir + FLAGS.model_name + ".txt", "rw", encoding="utf-8")
+
+                    f.write("\nPPX after epoch #%d: %f (Loss: %f  - #steps: %d - Current best PPX: %f)\n" %
+                            (ep, avg_ppx, avg_eval_loss, current_step, best_ppx))
+
+                    f.close()
+
                 # Save checkpoint
                 checkpoint_path = os.path.join(FLAGS.train_dir, FLAGS.model_name)
                 model.saver.save(sess, checkpoint_path, global_step=model.global_step)
@@ -138,11 +168,20 @@ def train_lm(FLAGS=None):
                 valid_batch_size = len(valid_data)
                 valid_inputs, valid_targets, valid_mask, _ = model.get_train_batch(valid_data, batch=valid_batch_size)
 
-                valid_cost, _ = model.train_step(session=sess, lm_inputs=valid_inputs, lm_targets=valid_targets,
-                                                 mask=valid_mask, op=tf.no_op())
+                valid_inputs = numpy.concatenate(valid_inputs)
+                valid_targets = numpy.concatenate(valid_targets)
+                valid_mask = numpy.concatenate(valid_mask)
+
+                avg_eval_loss = 0.0
+
+                for i in xrange(valid_inputs.shape[1]):
+                    valid_cost, _ = model.train_step(session=sess, lm_inputs=valid_inputs[:, i],
+                                                     lm_targets=valid_targets[:, i],
+                                                     mask=valid_mask[:, i], op=tf.no_op())
+
+                    avg_eval_loss += valid_cost
 
                 estop = FLAGS.early_stop_patience
-                avg_eval_loss = valid_cost
                 avg_ppx = math.exp(avg_eval_loss) if avg_eval_loss < 300 else float('inf')
 
                 if avg_ppx > 1000.0:
@@ -193,16 +232,48 @@ def train_lm(FLAGS=None):
             valid_batch_size = len(valid_data)
             valid_inputs, valid_targets, valid_mask, _ = model.get_train_batch(valid_data, batch=valid_batch_size)
 
-            valid_cost, _ = model.train_step(session=sess, lm_inputs=valid_inputs, lm_targets=valid_targets,
-                                             mask=valid_mask, op=tf.no_op())
+            valid_inputs = numpy.concatenate(valid_inputs)
+            valid_targets = numpy.concatenate(valid_targets)
+            valid_mask = numpy.concatenate(valid_mask)
 
-            avg_eval_loss = valid_cost
+            avg_eval_loss = 0.0
+
+            for i in xrange(valid_inputs.shape[1]):
+                valid_cost, _ = model.train_step(session=sess, lm_inputs=valid_inputs[:, i],
+                                                 lm_targets=valid_targets[:, i],
+                                                 mask=valid_mask[:, i], op=tf.no_op())
+
+                avg_eval_loss += valid_cost
             avg_ppx = math.exp(avg_eval_loss) if avg_eval_loss < 300 else float('inf')
 
             if avg_ppx > 1000.0:
-                print('\n  eval: averaged perplexity > 1000.0')
+                print('\n  eval: averaged valid. perplexity > 1000.0')
             else:
-                print('\n  eval: averaged perplexity %.8f' % avg_ppx)
-            print('  eval: averaged loss %.8f\n' % avg_eval_loss)
+                print('\n  eval: averaged valid. perplexity %.8f' % avg_ppx)
+            print('  eval: averaged valid. loss %.8f\n' % avg_eval_loss)
+
+            test_batch_size = len(test_data)
+            test_inputs, test_targets, test_mask, _ = model.get_train_batch(test_data, batch=test_batch_size)
+
+            test_inputs = numpy.concatenate(test_inputs)
+            test_targets = numpy.concatenate(test_targets)
+            test_mask = numpy.concatenate(test_mask)
+
+            avg_test_loss = 0.0
+
+            for i in xrange(valid_inputs.shape[1]):
+                test_cost, _ = model.train_step(session=sess, lm_inputs=test_inputs[:, i],
+                                                 lm_targets=test_targets[:, i],
+                                                 mask=test_mask[:, i], op=tf.no_op())
+
+                avg_test_loss += test_cost
+
+            test_ppx = math.exp(avg_test_loss) if avg_test_loss < 300 else float('inf')
+
+            if test_ppx > 1000.0:
+                print('\n  eval: averaged test perplexity > 1000.0')
+            else:
+                print('\n  eval: averaged test perplexity %.8f' % test_ppx)
+            print('  eval: averaged test loss %.8f\n' % avg_test_loss)
 
             sys.stdout.flush()

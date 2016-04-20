@@ -60,7 +60,7 @@ def create_vocabulary(vocabulary_path, data_path, max_vocabulary_size,
                 tokens = basic_tokenizer(line)
                 for w in tokens:
                     word = re.sub(_DIGIT_RE, '0', w) if normalize_digits else w
-                    if word in vocab:
+                    if word in vocab and word != "<unk>":
                         vocab[word] += 1
                     else:
                         vocab[word] = 1
@@ -216,6 +216,7 @@ def read_lm_data(source_path, FLAGS=None, max_size=None):
                     sys.stdout.flush()
 
                 source_ids = [int(x) for x in source.split()]
+
                 data_set.append(source_ids)
 
                 source = source_file.readline()

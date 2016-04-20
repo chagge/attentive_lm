@@ -11,7 +11,10 @@ from tensorflow.python.ops import array_ops
 
 import data_utils
 import cells
+import lm_ops
 
+
+_SEED = 1234
 
 class LMModel(object):
     """The PTB model."""
@@ -30,7 +33,12 @@ class LMModel(object):
                  dropout_rate=0.0,
                  lr_decay=0.8,
                  batch_size=20,
+                 attentive=False,
+                 projection_attention_f=None,
                  vocab_size=10000):
+
+        if attentive:
+            assert projection_attention_f is not None
 
         self.batch_size = batch_size = batch_size
         self.num_steps = num_steps = num_steps
@@ -86,9 +94,11 @@ class LMModel(object):
             self.estop_counter_update_op = None
             self.estop_counter_reset_op = None
 
+        initializer = tf.random_uniform_initializer(minval=-0.1, maxval=0.1, seed=_SEED)
+
         loss_function = None
 
-        with tf.device("/gpu:0"):
+        with tf.device("/cpu:0"):
             w = tf.get_variable("proj_w", [hidden_size, vocab_size])
             w_t = tf.transpose(w)
             b = tf.get_variable("proj_b", [vocab_size])
@@ -101,7 +111,7 @@ class LMModel(object):
             sampled_softmax = True
 
             def sampled_loss(logits, labels):
-                with tf.device("/gpu:0"):
+                with tf.device("/cpu:0"):
                     labels = tf.reshape(labels, [-1, 1])
                     losses = tf.nn.sampled_softmax_loss(w_t, b, logits, labels, num_samples, vocab_size)
                     return losses
@@ -115,10 +125,16 @@ class LMModel(object):
             inputs = [tf.nn.embedding_lookup(embedding, i) for i in self.input_data]
             # inputs = [tf.squeeze(input_, [1]) for input_ in inputs]
 
-        with tf.variable_scope("RNN"):
-            # initial_state = self.cell.zero_state(batch_size=batch_size, dtype=tf.float32)
-            # initial state will be all zeros
-            outputs, state = rnn.rnn(self.cell, inputs, dtype=tf.float32)
+        with tf.variable_scope("RNN", initializer=initializer):
+
+            if attentive:
+                outputs, state, _ = lm_ops.apply_attentive_lm(
+                    self.cell, inputs, attn_size=hidden_size, projection_attention_f=projection_attention_f,
+                    initializer=initializer, dtype=tf.float32
+                )
+
+            else:
+               outputs, state = lm_ops.apply_lm(self.cell, inputs, dtype=tf.float32)
 
             if sampled_softmax is False:
                 outputs = [tf.nn.xw_plus_b(o, self.output_projection[0], self.output_projection[1]) for o in outputs]
@@ -146,9 +162,6 @@ class LMModel(object):
         self.saver = tf.train.Saver(tf.all_variables())
         self.saver_best = tf.train.Saver(tf.all_variables())
 
-    @property
-    def initial_state(self):
-        return self._initial_state
 
     @property
     def cost(self):

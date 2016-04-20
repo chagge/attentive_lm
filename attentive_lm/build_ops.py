@@ -1,6 +1,7 @@
 import tensorflow as tf
 from tensorflow.python.platform import gfile
 
+import content_functions
 import lm_models
 
 
@@ -10,6 +11,11 @@ def create_lm_model(session, is_training=True, FLAGS=None, initializer=None, mod
     assert initializer is not None
 
     with tf.variable_scope("model", reuse=None, initializer=initializer):
+
+        if FLAGS.attentive:
+            projection_attention_f = content_functions.get_attentive_content_f(FLAGS.projection_attention)
+        else:
+            projection_attention_f = None
 
         if is_training:
 
@@ -26,7 +32,9 @@ def create_lm_model(session, is_training=True, FLAGS=None, initializer=None, mod
                                       dropout_rate=FLAGS.dropout_rate,
                                       lr_decay=FLAGS.lr_decay,
                                       batch_size=FLAGS.batch_size,
-                                      vocab_size=FLAGS.src_vocab_size)
+                                      vocab_size=FLAGS.src_vocab_size,
+                                      attentive=FLAGS.attentive,
+                                      projection_attention_f=projection_attention_f)
         else:
             model = lm_models.LMModel(is_training=is_training,
                                       learning_rate=FLAGS.learning_rate,
@@ -41,7 +49,9 @@ def create_lm_model(session, is_training=True, FLAGS=None, initializer=None, mod
                                       dropout_rate=FLAGS.dropout_rate,
                                       lr_decay=FLAGS.lr_decay,
                                       batch_size=1,
-                                      vocab_size=FLAGS.src_vocab_size)
+                                      vocab_size=FLAGS.src_vocab_size,
+                                      attentive=FLAGS.attentive,
+                                      projection_attention_f=projection_attention_f)
 
         if model_path is None:
 
