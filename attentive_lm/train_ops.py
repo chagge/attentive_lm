@@ -72,6 +72,9 @@ def train_lm(FLAGS=None):
                 avgloss = closs / gstep
                 sess.run(model.avg_loss.assign(avgloss))
 
+                if words_time == 0.0:
+                    words_time += (time.time() - start_time)
+
                 target_words_speed = n_target_words / words_time
 
                 loss = model.avg_loss.eval()
@@ -95,11 +98,12 @@ def train_lm(FLAGS=None):
                 step_time = 0.0
                 words_time = 0.0
 
-            if current_step % FLAGS.steps_per_checkpoint == 0:
-                # Save checkpoint
-                checkpoint_path = os.path.join(FLAGS.train_dir, FLAGS.model_name)
-                model.saver.save(sess, checkpoint_path, global_step=model.global_step)
-                saved = True
+            if FLAGS.steps_per_checkpoint > 0:
+                if current_step % FLAGS.steps_per_checkpoint == 0:
+                    # Save checkpoint
+                    checkpoint_path = os.path.join(FLAGS.train_dir, FLAGS.model_name)
+                    model.saver.save(sess, checkpoint_path, global_step=model.global_step)
+                    saved = True
 
             # update epoch number
             if model.samples_seen.eval() >= train_total_size:
@@ -107,57 +111,48 @@ def train_lm(FLAGS=None):
                 ep = model.epoch.eval()
                 print("Epoch %d finished..." % (ep - 1))
 
+                should_stop = False
+
                 if FLAGS.eval_after_each_epoch:
 
                     print("\nValidating:\n")
 
-                    valid_batch_size = len(valid_data)
-                    valid_steps = valid_batch_size / FLAGS.batch_size
-                    last_step = valid_batch_size % FLAGS.batch_size
+                    avg_eval_loss, avg_ppx = run_eval(model=model, session=sess, data=valid_data,
+                                                      batch_size=FLAGS.batch_size)
 
-                    avg_eval_loss = 0.0
-
-                    for i in xrange(valid_steps + 1):
-
-                        b = FLAGS.batch_size
-                        if i == valid_steps:
-                            d = valid_data[-last_step:]
-                            valid_inputs, valid_targets, valid_mask, _ = model.get_train_batch(d, batch=last_step)
-                        else:
-                            d = valid_data[(i * b):((i + 1) * b)]
-                            valid_inputs, valid_targets, valid_mask, _ = model.get_train_batch(d, batch=b)
-
-                        valid_cost, _ = model.train_step(session=sess, lm_inputs=valid_inputs,
-                                                         lm_targets=valid_targets,
-                                                         mask=valid_mask, op=tf.no_op())
-
-                        avg_eval_loss += valid_cost
-
-                    avg_ppx = math.exp(avg_eval_loss) if avg_eval_loss < 300 else float('inf')
                     best_loss = model.best_eval_loss.eval()
                     best_ppx = math.exp(best_loss) if best_loss < 300 else float('inf')
 
-                    f = codecs.open(FLAGS.best_models_dir + FLAGS.model_name + ".txt", "rw", encoding="utf-8")
+                    with codecs.open(FLAGS.best_models_dir + FLAGS.model_name + ".txt", "a", encoding="utf-8") as f:
+                        f.write("PPX after epoch #%d: %f (Loss: %f  - #steps: %d - Current best PPX: %f)\n" %
+                                (ep, avg_ppx, avg_eval_loss, current_step, best_ppx))
 
-                    f.write("\nPPX after epoch #%d: %f (Loss: %f  - #steps: %d - Current best PPX: %f)\n" %
+
+                    print("PPX after epoch #%d: %f (Loss: %f  - #steps: %d - Current best PPX: %f)" %
                             (ep, avg_ppx, avg_eval_loss, current_step, best_ppx))
 
-                    f.close()
+                    if FLAGS.steps_per_validation == 0:
+
+                        # if we are not validating after some steps, we validate after each epoch,
+                        # therefore we must check the early stop here
+                        should_stop = check_early_stop(model=model, session=sess, loss=avg_eval_loss, flags=FLAGS)
 
                 # Save checkpoint
                 checkpoint_path = os.path.join(FLAGS.train_dir, FLAGS.model_name)
                 model.saver.save(sess, checkpoint_path, global_step=model.global_step)
+
+                if should_stop:
+                    break
+
+                print("Epoch %d started..." % ep)
+                sess.run(model.samples_seen_reset_op)
 
                 if ep >= FLAGS.max_epochs:
                     if not saved:
                         # Save checkpoint
                         checkpoint_path = os.path.join(FLAGS.train_dir, FLAGS.model_name)
                         model.saver.save(sess, checkpoint_path, global_step=model.global_step)
-                    finished = True
                     break
-
-                print("Epoch %d started..." % ep)
-                sess.run(model.samples_seen_reset_op)
 
                 if FLAGS.start_decay > 0:
 
@@ -171,66 +166,25 @@ def train_lm(FLAGS=None):
                         if FLAGS.start_decay <= model.epoch.eval():
                             sess.run(model.learning_rate_decay_op)
 
-            if current_step % FLAGS.steps_per_validation == 0:
+            if FLAGS.steps_per_validation > 0:
 
-                print("\nValidating:\n")
+                if current_step % FLAGS.steps_per_validation == 0:
 
-                valid_batch_size = len(valid_data)
-                valid_steps = valid_batch_size / FLAGS.batch_size
-                last_step = valid_batch_size % FLAGS.batch_size
+                    print("\nValidating:\n")
 
-                avg_eval_loss = 0.0
+                    avg_eval_loss, avg_ppx = run_eval(model=model, session=sess, data=valid_data,
+                                                      batch_size=FLAGS.batch_size)
 
-                for i in xrange(valid_steps + 1):
-
-                    b = FLAGS.batch_size
-                    if i == valid_steps:
-                        d = valid_data[-last_step:]
-                        valid_inputs, valid_targets, valid_mask, _ = model.get_train_batch(d, batch=last_step)
+                    if avg_ppx > 1000.0:
+                        print('\n  eval: averaged perplexity > 1000.0')
                     else:
-                        d = valid_data[(i * b):((i + 1) * b)]
-                        valid_inputs, valid_targets, valid_mask, _ = model.get_train_batch(d,  batch=b)
+                        print('\n  eval: averaged perplexity %.8f' % avg_ppx)
+                    print('  eval: averaged loss %.8f\n' % avg_eval_loss)
 
-                    valid_cost, _ = model.train_step(session=sess, lm_inputs=valid_inputs,
-                                                     lm_targets=valid_targets,
-                                                     mask=valid_mask, op=tf.no_op())
+                    should_stop = check_early_stop(model=model, session=sess, loss=avg_eval_loss, flags=FLAGS)
 
-                    avg_eval_loss += valid_cost
-
-                estop = FLAGS.early_stop_patience
-                avg_ppx = math.exp(avg_eval_loss) if avg_eval_loss < 300 else float('inf')
-
-
-                if avg_ppx > 1000.0:
-                    print('\n  eval: averaged perplexity > 1000.0')
-                else:
-                    print('\n  eval: averaged perplexity %.8f' % avg_ppx)
-                print('  eval: averaged loss %.8f\n' % avg_eval_loss)
-
-                # check early stop - if early stop patience is greater than 0, test it
-                if estop > 0:
-
-                    if avg_eval_loss < model.best_eval_loss.eval():
-                        sess.run(model.best_eval_loss.assign(avg_eval_loss))
-                        sess.run(model.estop_counter_reset_op)
-                        # Save checkpoint
-                        print('Saving the best model so far...')
-                        best_model_path = os.path.join(FLAGS.best_models_dir, FLAGS.model_name + '-best')
-                        model.saver_best.save(sess, best_model_path, global_step=model.global_step)
-
-                    else:
-                        # if FLAGS.early_stop_after_epoch is equal to 0, it will monitor from the beginning
-                        if model.epoch.eval() >= FLAGS.early_stop_after_epoch:
-
-                            sess.run(model.estop_counter_update_op)
-
-                            if model.estop_counter.eval() >= estop:
-                                print('\nEARLY STOP!\n')
-                                finished = True
-                                break
-
-                    print('\n   best valid. loss: %.8f' % model.best_eval_loss.eval())
-                    print('early stop patience: %d - max %d\n' % (int(model.estop_counter.eval()), estop))
+                    if should_stop:
+                        break
 
             step_time += (time.time() - start_time) / FLAGS.steps_verbosity
             words_time += (time.time() - start_time)
@@ -244,29 +198,7 @@ def train_lm(FLAGS=None):
 
             print("Final validation:")
 
-            valid_batch_size = len(valid_data)
-            valid_steps = valid_batch_size / FLAGS.batch_size
-            last_step = valid_batch_size % FLAGS.batch_size
-
-            avg_eval_loss = 0.0
-
-            for i in xrange(valid_steps + 1):
-
-                b = FLAGS.batch_size
-                if i == valid_steps:
-                    d = valid_data[-last_step:]
-                    valid_inputs, valid_targets, valid_mask, _ = model.get_train_batch(d, batch=last_step)
-                else:
-                    d = valid_data[(i * b):((i + 1) * b)]
-                    valid_inputs, valid_targets, valid_mask, _ = model.get_train_batch(d, batch=b)
-
-                valid_cost, _ = model.train_step(session=sess, lm_inputs=valid_inputs,
-                                                 lm_targets=valid_targets,
-                                                 mask=valid_mask, op=tf.no_op())
-
-                avg_eval_loss += valid_cost
-
-            avg_ppx = math.exp(avg_eval_loss) if avg_eval_loss < 300 else float('inf')
+            avg_eval_loss, avg_ppx = run_eval(model=model, session=sess, data=valid_data, batch_size=FLAGS.batch_size)
 
             if avg_ppx > 1000.0:
                 print('\n  eval: averaged valid. perplexity > 1000.0')
@@ -276,29 +208,7 @@ def train_lm(FLAGS=None):
 
             print("\n##### Test Results: #####\n")
 
-            test_batch_size = len(test_data)
-            test_steps = test_batch_size / FLAGS.batch_size
-            last_step = test_batch_size % FLAGS.batch_size
-
-            avg_test_loss = 0.0
-
-            for i in xrange(test_steps + 1):
-
-                b = FLAGS.batch_size
-                if i == test_steps:
-                    d = test_data[-last_step:]
-                    test_inputs, test_targets, test_mask, _ = model.get_train_batch(d, batch=last_step)
-                else:
-                    d = test_data[(i * b):((i + 1) * b)]
-                    test_inputs, test_targets, test_mask, _ = model.get_train_batch(d, batch=b)
-
-                test_cost, _ = model.train_step(session=sess, lm_inputs=test_inputs,
-                                                lm_targets=test_targets,
-                                                mask=test_mask, op=tf.no_op())
-
-                avg_test_loss += test_cost
-
-            test_ppx = math.exp(avg_test_loss) if avg_test_loss < 300 else float('inf')
+            avg_test_loss, test_ppx = run_eval(model=model, session=sess, data=test_data, batch_size=FLAGS.batch_size)
 
             if test_ppx > 1000.0:
                 print('\n  eval: averaged test perplexity > 1000.0')
@@ -307,3 +217,92 @@ def train_lm(FLAGS=None):
             print('  eval: averaged test loss %.8f\n' % avg_test_loss)
 
             sys.stdout.flush()
+
+
+def run_eval(model, session, data, batch_size):
+    """
+
+    Parameters
+    ----------
+    model
+    session
+    data
+    batch_size
+
+    Returns
+    -------
+
+    """
+    eval_batch_size = len(data)
+    eval_steps = eval_batch_size / batch_size
+    last_step = eval_batch_size % batch_size
+
+    avg_eval_loss = 0.0
+
+    for i in xrange(eval_steps + 1):
+
+        b = batch_size
+        if i == eval_steps:
+            d = data[-last_step:]
+            eval_inputs, eval_targets, eval_mask, _ = model.get_train_batch(d, batch=last_step)
+        else:
+            d = data[(i * b):((i + 1) * b)]
+            eval_inputs, eval_targets, eval_mask, _ = model.get_train_batch(d, batch=b)
+
+        eval_cost, _ = model.train_step(session=session, lm_inputs=eval_inputs,
+                                        lm_targets=eval_targets,
+                                        mask=eval_mask, op=tf.no_op())
+
+        avg_eval_loss += eval_cost
+
+    avg_eval_loss = avg_eval_loss / (eval_steps + 1)
+
+    eval_ppx = math.exp(avg_eval_loss) if avg_eval_loss < 300 else float('inf')
+
+    return avg_eval_loss, eval_ppx
+
+
+def check_early_stop(model, session, loss, flags):
+    """
+
+    Parameters
+    ----------
+    model
+    session
+    loss
+    flags
+
+    Returns
+    -------
+
+    """
+
+    stop = False
+
+    patience = flags.early_stop_patience
+
+    # check early stop - if early stop patience is greater than 0, test it
+    if patience > 0:
+
+        if loss < model.best_eval_loss.eval():
+            session.run(model.best_eval_loss.assign(loss))
+            session.run(model.estop_counter_reset_op)
+            # Save checkpoint
+            print('\nSaving the best model so far...')
+            best_model_path = os.path.join(flags.best_models_dir, flags.model_name + '-best')
+            model.saver_best.save(session, best_model_path, global_step=model.global_step)
+
+        else:
+            # if FLAGS.early_stop_after_epoch is equal to 0, it will monitor from the beginning
+            if model.epoch.eval() >= flags.early_stop_after_epoch:
+
+                session.run(model.estop_counter_update_op)
+
+                if model.estop_counter.eval() >= patience:
+                    print('\nEARLY STOP!\n')
+                    stop = True
+
+        print('\n   best valid. loss: %.8f' % model.best_eval_loss.eval())
+        print('early stop patience: %d - max %d\n' % (int(model.estop_counter.eval()), patience))
+
+    return stop

@@ -28,6 +28,7 @@ class LMModel(object):
                  num_steps=35,
                  proj_size=650,
                  hidden_size=650,
+                 hidden_proj=650,
                  num_samples=512,
                  early_stop_patience=0,
                  dropout_rate=0.0,
@@ -57,7 +58,12 @@ class LMModel(object):
             self.targets.append(tf.placeholder(tf.int32, shape=[None], name="target{0}".format(i)))
             self.mask.append(tf.placeholder(tf.float32, shape=[None], name="mask{0}".format(i)))
 
-        self.cell = cells.build_lm_multicell_rnn(num_layers, hidden_size, proj_size, use_lstm=use_lstm, dropout=dropout_rate)
+        hidden_projection = None
+        if hidden_proj > 0:
+            hidden_projection = hidden_proj
+
+        self.cell = cells.build_lm_multicell_rnn(num_layers, hidden_size, proj_size, use_lstm=use_lstm,
+                                                 hidden_projection=hidden_projection, dropout=dropout_rate)
 
         # self._initial_state = tf.placeholder(tf.float32, [None], name='initial_state')
 
@@ -99,7 +105,10 @@ class LMModel(object):
         loss_function = None
 
         with tf.device("/cpu:0"):
-            w = tf.get_variable("proj_w", [hidden_size, vocab_size])
+            out_proj = hidden_size
+            if hidden_proj > 0:
+                out_proj = hidden_proj
+            w = tf.get_variable("proj_w", [out_proj, vocab_size])
             w_t = tf.transpose(w)
             b = tf.get_variable("proj_b", [vocab_size])
         self.output_projection = (w, b)

@@ -41,10 +41,12 @@ def _reverse_seq(input_seq, lengths):
 class GRUCell(RNNCell):
     """Gated Recurrent Unit cell (cf. http://arxiv.org/abs/1406.1078)."""
 
-    def __init__(self, input_size, num_units, initializer=None):
+    def __init__(self, input_size, num_units, num_proj=None, num_proj_shards=1,initializer=None):
         self._num_units = num_units
         self._input_size = input_size
         self._initializer = initializer
+        self._num_proj = num_proj
+        self._num_proj_shards = num_proj_shards
 
     @property
     def input_size(self):
@@ -60,6 +62,7 @@ class GRUCell(RNNCell):
 
     def __call__(self, inputs, state, initializer=None, scope=None):
         """Gated recurrent unit (GRU) with nunits cells."""
+        dtype = inputs.dtype
         with tf.variable_scope(scope or type(self).__name__, initializer=self._initializer):  # "GRUCell"
             with tf.variable_scope("Gates"):  # Reset gate and update gate.
                 # We start with bias of 1.0 to not reset and not udpate.
@@ -68,6 +71,14 @@ class GRUCell(RNNCell):
             with tf.variable_scope("Candidate"):
                 c = tf.tanh(linear([inputs, r * state], self._num_units, True))
             new_h = u * state + (1 - u) * c
+
+            if self._num_proj is not None:
+                concat_w_proj = rnn_cell._get_concat_variable(
+                    "W_P", [self._num_units, self._num_proj],
+                    dtype, self._num_proj_shards)
+
+                new_h = math_ops.matmul(new_h, concat_w_proj)
+
         return new_h, new_h
 
 
@@ -279,11 +290,13 @@ def bidirectional_rnn(cell_fw, cell_bw, inputs,
     return (outputs, output_state_fw, output_state_bw)
 
 
-def build_lm_multicell_rnn(num_layers, hidden_size, proj_size, use_lstm=True, input_feeding=False, dropout=0.0):
+def build_lm_multicell_rnn(num_layers, hidden_size, word_proj_size, use_lstm=True,
+                           hidden_projection=None, input_feeding=False, dropout=0.0):
 
     if use_lstm:
         print("I'm building the model with LSTM cells")
         cell_class = rnn_cell.LSTMCell
+
     else:
         print("I'm building the model with GRU cells")
         cell_class = GRUCell
@@ -291,14 +304,24 @@ def build_lm_multicell_rnn(num_layers, hidden_size, proj_size, use_lstm=True, in
     initializer = tf.random_uniform_initializer(minval=-0.1, maxval=0.1, seed=1234)
 
     if input_feeding:
-        lm_cell0 = cell_class(num_units=hidden_size, input_size=proj_size + hidden_size, initializer=initializer)
+        lm_cell0 = cell_class(num_units=hidden_size, input_size=word_proj_size + hidden_size,
+                              initializer=initializer, num_proj=hidden_projection)
+
     else:
-        lm_cell0 = cell_class(num_units=hidden_size, input_size=hidden_size, initializer=initializer)
+        lm_cell0 = cell_class(num_units=hidden_size, input_size=hidden_size,
+                              initializer=initializer, num_proj=hidden_projection)
 
     lm_cell0 = rnn_cell.DropoutWrapper(lm_cell0, output_keep_prob=1.0 - dropout)
 
     if num_layers > 1:
-        lm_cell1 = cell_class(num_units=hidden_size, input_size=hidden_size, initializer=initializer)
+        hidden_input = hidden_size
+
+        if hidden_projection is not None:
+            hidden_input = hidden_projection
+
+        lm_cell1 = cell_class(num_units=hidden_size, input_size=hidden_input,
+                              initializer=initializer, num_proj=hidden_projection)
+
         lm_cell1 = rnn_cell.DropoutWrapper(lm_cell1, output_keep_prob=1.0-dropout)
 
         lm_rnncell = rnn_cell.MultiRNNCell([lm_cell0] + [lm_cell1] * (num_layers - 1))
