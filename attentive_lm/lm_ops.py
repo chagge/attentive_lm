@@ -7,7 +7,7 @@ import cells
 _SEED = 1234
 
 
-def apply_attentive_lm(cell, inputs, attn_size, projection_attention_f=None, initializer=None,
+def apply_attentive_lm(cell, inputs, projection_attention_f=None, initializer=None,
                        dtype=tf.float32):
     """
 
@@ -29,20 +29,23 @@ def apply_attentive_lm(cell, inputs, attn_size, projection_attention_f=None, ini
 
     batch_size = array_ops.shape(inputs[0])[0]
     output_size = cell.output_size
+    attn_size = cell.output_size
 
     cell_outputs = []
     outputs = []
     cell_state = cell.zero_state(batch_size=batch_size, dtype=dtype)
 
-    ct, _ = tf.split(split_dim=1, num_split=2, value=cell_state)
-
-    cell_outputs.append(ct)
+    # ct, _ = tf.split(split_dim=1, num_split=2, value=cell_state)
+    #
+    # cell_outputs.append(ct)
 
     for i in xrange(len(inputs)):
         if i > 0:
             vs.get_variable_scope().reuse_variables()
 
         cell_output, new_state = cell(inputs[i], cell_state)
+        cell_state = new_state
+        cell_outputs.append(cell_output)
 
         shape1 = len(cell_outputs)
 
@@ -52,15 +55,20 @@ def apply_attentive_lm(cell, inputs, attn_size, projection_attention_f=None, ini
 
         decoder_hidden = array_ops.reshape(output_attention_states, [-1, shape1, 1, attn_size])
 
-        cell_outputs.append(cell_output)
-        cell_state = new_state
-
         with vs.variable_scope("AttnOutputProjection", initializer=initializer):
 
             ht_hat = decoder_output_attention(decoder_hidden,
                                               attn_size,
                                               projection_attention_f,
                                               initializer=initializer)
+
+            # with vs.variable_scope("AttnOutputProjection_logit_lstm", initializer=initializer):
+            #     # if we pass a list of tensors, linear will first concatenate them over axis 1
+            #     logit_lstm = cells.linear([ht_hat], output_size, True)
+            #
+            # with vs.variable_scope("AttnOutputProjection_logit_ctx", initializer=initializer):
+            #     # if we pass a list of tensors, linear will first concatenate them over axis 1
+            #     logit_ctx = cells.linear([cell_output], output_size, True)
 
             output = cells.linear([cell_output] + [ht_hat], output_size, True)
 

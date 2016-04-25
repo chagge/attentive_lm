@@ -17,43 +17,24 @@ def create_lm_model(session, is_training=True, FLAGS=None, initializer=None, mod
         else:
             projection_attention_f = None
 
-        if is_training:
-
-            model = lm_models.LMModel(is_training=is_training,
-                                      learning_rate=FLAGS.learning_rate,
-                                      max_grad_norm=FLAGS.max_grad_norm,
-                                      num_layers=FLAGS.num_layers,
-                                      num_steps=FLAGS.num_steps,
-                                      proj_size=FLAGS.proj_size,
-                                      hidden_size=FLAGS.hidden_size,
-                                      hidden_proj=FLAGS.hidden_proj,
-                                      use_lstm=FLAGS.use_lstm,
-                                      num_samples=FLAGS.num_samples_loss,
-                                      early_stop_patience=FLAGS.early_stop_patience,
-                                      dropout_rate=FLAGS.dropout_rate,
-                                      lr_decay=FLAGS.lr_decay,
-                                      batch_size=FLAGS.batch_size,
-                                      vocab_size=FLAGS.src_vocab_size,
-                                      attentive=FLAGS.attentive,
-                                      projection_attention_f=projection_attention_f)
-        else:
-            model = lm_models.LMModel(is_training=is_training,
-                                      learning_rate=FLAGS.learning_rate,
-                                      max_grad_norm=FLAGS.max_grad_norm,
-                                      num_layers=FLAGS.num_layers,
-                                      num_steps=1,
-                                      proj_size=FLAGS.proj_size,
-                                      hidden_size=FLAGS.hidden_size,
-                                      hidden_proj=FLAGS.hidden_proj,
-                                      use_lstm=FLAGS.use_lstm,
-                                      num_samples=FLAGS.num_samples_loss,
-                                      early_stop_patience=FLAGS.early_stop_patience,
-                                      dropout_rate=FLAGS.dropout_rate,
-                                      lr_decay=FLAGS.lr_decay,
-                                      batch_size=1,
-                                      vocab_size=FLAGS.src_vocab_size,
-                                      attentive=FLAGS.attentive,
-                                      projection_attention_f=projection_attention_f)
+        model = lm_models.LMModel(is_training=is_training,
+                                  learning_rate=FLAGS.learning_rate,
+                                  optimizer=FLAGS.optimizer,
+                                  max_grad_norm=FLAGS.max_grad_norm,
+                                  num_layers=FLAGS.num_layers,
+                                  num_steps=FLAGS.num_steps,
+                                  proj_size=FLAGS.proj_size,
+                                  hidden_size=FLAGS.hidden_size,
+                                  hidden_proj=FLAGS.hidden_proj,
+                                  use_lstm=FLAGS.use_lstm,
+                                  num_samples=FLAGS.num_samples_loss,
+                                  early_stop_patience=FLAGS.early_stop_patience,
+                                  dropout_rate=FLAGS.dropout_rate,
+                                  lr_decay=FLAGS.lr_decay,
+                                  batch_size=FLAGS.batch_size,
+                                  vocab_size=FLAGS.src_vocab_size,
+                                  attentive=FLAGS.attentive,
+                                  projection_attention_f=projection_attention_f)
 
         if model_path is None:
 

@@ -9,6 +9,7 @@ import sys
 from tensorflow.python.platform import gfile
 import build_ops
 from data_utils import read_lm_data, prepare_lm_data
+import reader
 # from six.moves import xrange
 
 
@@ -16,8 +17,28 @@ def train_lm(FLAGS=None):
 
     assert FLAGS is not None
 
-    print('Preparing data in %s' % FLAGS.data_dir)
+    if not os.path.exists(FLAGS.train_dir):
+        os.makedirs(FLAGS.train_dir)
+
+    if not os.path.exists(FLAGS.best_models_dir):
+        os.makedirs(FLAGS.best_models_dir)
+
+    src_lang = FLAGS.source_lang
+    # raw_data = reader.ptb_raw_data(FLAGS.data_dir,
+    #                                train=FLAGS.train_data % src_lang,
+    #                                valid=FLAGS.train_data % src_lang,
+    #                                test=FLAGS.train_data % src_lang,
+    #                                vocab_size=FLAGS.src_vocab_size)
+    #
+    # train_data, valid_data, test_data, _ = raw_data
+
+    print('Reading development and training data (limit: %d).' % FLAGS.max_train_data_size)
+
     src_train, src_dev, src_test = prepare_lm_data(FLAGS)
+
+    valid_data = read_lm_data(src_dev, FLAGS=FLAGS)
+    test_data = read_lm_data(src_test, FLAGS=FLAGS)
+    train_data = read_lm_data(src_train, max_size=FLAGS.max_train_data_size, FLAGS=FLAGS)
 
     with tf.Session(config=tf.ConfigProto(allow_soft_placement=True, log_device_placement=False)) as sess:
 
@@ -27,20 +48,6 @@ def train_lm(FLAGS=None):
         initializer = tf.random_uniform_initializer(-FLAGS.init_scale, FLAGS.init_scale)
         model = build_ops.create_lm_model(sess, is_training=True, FLAGS=FLAGS, initializer=initializer)
 
-        print('Reading development and training data (limit: %d).' % FLAGS.max_train_data_size)
-
-        valid_data = read_lm_data(src_dev, FLAGS=FLAGS)
-        test_data = read_lm_data(src_test, FLAGS=FLAGS)
-        train_data = read_lm_data(src_train, max_size=FLAGS.max_train_data_size, FLAGS=FLAGS)
-        train_total_size = len(train_data)
-
-        epoch_size = train_total_size / FLAGS.batch_size
-        print("Total number of updates per epoch: %d" % epoch_size)
-
-        step_time = 0.0
-        words_time = 0.0
-        n_target_words = 0
-
         print("Optimization started...")
         while model.epoch.eval() < FLAGS.max_epochs:
 
@@ -48,147 +55,126 @@ def train_lm(FLAGS=None):
 
             start_time = time.time()
 
-            lm_inputs, lm_targets, lm_mask, n_words = model.get_train_batch(train_data)
+            epoch_size = ((len(train_data) / model.batch_size) - 1) / model.num_steps
+            costs = 0.0
+            iters = 0
+            state = model.initial_state_train.eval()
 
-            n_target_words += n_words
+            for step, (x, y) in enumerate(reader.ptb_iterator(train_data, model.batch_size,  model.num_steps)):
+                loss, state, _ = sess.run([model.cost_train, model.final_state_train, model.train_op],
+                                          {model.input_data_train: x, model.targets_train: y,
+                                           model.initial_state_train: state})
 
-            loss, _ = model.train_step(session=sess, lm_inputs=lm_inputs, lm_targets=lm_targets, mask=lm_mask)
+                if numpy.isnan(loss) or numpy.isinf(loss):
+                    print 'NaN detected'
+                    nan_detected = True
+                    break
 
-            currloss = model.current_loss.eval()
-            sess.run(model.current_loss.assign(currloss + loss))
-            sess.run(model.samples_seen_update_op)
+                costs += loss
+                iters += model.num_steps
 
-            current_step = model.global_step.eval()
+                current_global_step = model.global_step.eval()
 
-            if numpy.isnan(loss) or numpy.isinf(loss):
-                print 'NaN detected'
-                nan_detected = True
-                break
+                if current_global_step % FLAGS.steps_verbosity == 0:
 
-            if current_step % FLAGS.steps_verbosity == 0:
+                    target_words_speed = (iters * model.batch_size) / (time.time() - start_time)
 
-                closs = model.current_loss.eval()
-                gstep = model.global_step.eval()
-                avgloss = closs / gstep
-                sess.run(model.avg_loss.assign(avgloss))
+                    ppx = numpy.exp(costs / iters)
+                    sess.run(model.current_ppx.assign(ppx))
 
-                if words_time == 0.0:
-                    words_time += (time.time() - start_time)
+                    print('epoch %d global step %d lr.rate %.4f avg.ppx %.8f - avg. %.2f words/sec' %
+                          (model.epoch.eval(), current_global_step, model.learning_rate.eval(),
+                           ppx, target_words_speed))
 
-                target_words_speed = n_target_words / words_time
+                if FLAGS.steps_per_checkpoint > 0:
+                    if current_global_step % FLAGS.steps_per_checkpoint == 0:
+                        # Save checkpoint
+                        checkpoint_path = os.path.join(FLAGS.train_dir, FLAGS.model_name)
+                        model.saver.save(sess, checkpoint_path, global_step=model.global_step)
+                        saved = True
 
-                loss = model.avg_loss.eval()
-                ppx = math.exp(loss) if loss < 300 else float('inf')
+                if FLAGS.steps_per_validation > 0:
 
-                if ppx > 1000.0:
+                    if current_global_step % FLAGS.steps_per_validation == 0:
 
-                    print(
-                        'epoch %d gl.step %d lr.rate %.4f steps-time %.2f avg.loss %.8f avg.ppx > 1000.0 - avg. %.2f K target words/sec' %
-                        (model.epoch.eval(), model.global_step.eval(), model.learning_rate.eval(),
-                         step_time, loss, (target_words_speed / 1000.0)))
+                        print("\nValidating:\n")
 
-                else:
+                        valid_ppx = run_eval(model=model, session=sess, data=valid_data)
+                        best_ppx = model.best_eval_ppx.eval()
 
-                    print(
-                        'epoch %d gl.step %d lr.rate %.4f steps-time %.2f avg.loss %.8f avg.ppx %.8f - avg. %.2f K target words/sec' %
-                        (model.epoch.eval(), model.global_step.eval(), model.learning_rate.eval(),
-                         step_time, loss, ppx, (target_words_speed / 1000.0)))
+                        print("PPX %f Global Step %d (Current best PPX: %f)\n" % (valid_ppx, step, best_ppx))
 
-                n_target_words = 0
-                step_time = 0.0
-                words_time = 0.0
+                        should_stop = check_early_stop(model=model, session=sess, ppx=valid_ppx, flags=FLAGS)
 
-            if FLAGS.steps_per_checkpoint > 0:
-                if current_step % FLAGS.steps_per_checkpoint == 0:
+                        if should_stop:
+                            break
+
+            ep = model.epoch.eval()
+            print("Epoch %d finished... " % ep)
+
+            epoch_ppx = numpy.exp(costs / iters)
+
+            should_stop = False
+
+            if FLAGS.eval_after_each_epoch:
+
+                if FLAGS.save_each_epoch:
                     # Save checkpoint
                     checkpoint_path = os.path.join(FLAGS.train_dir, FLAGS.model_name)
                     model.saver.save(sess, checkpoint_path, global_step=model.global_step)
-                    saved = True
 
-            # update epoch number
-            if model.samples_seen.eval() >= train_total_size:
-                sess.run(model.epoch_update_op)
-                ep = model.epoch.eval()
-                print("Epoch %d finished..." % (ep - 1))
+            ep_new = ep
 
-                should_stop = False
-
-                if FLAGS.eval_after_each_epoch:
-
-                    print("\nValidating:\n")
-
-                    avg_eval_loss, avg_ppx = run_eval(model=model, session=sess, data=valid_data,
-                                                      batch_size=FLAGS.batch_size)
-
-                    best_loss = model.best_eval_loss.eval()
-                    best_ppx = math.exp(best_loss) if best_loss < 300 else float('inf')
-
-                    with codecs.open(FLAGS.best_models_dir + FLAGS.model_name + ".txt", "a", encoding="utf-8") as f:
-                        f.write("PPX after epoch #%d: %f (Loss: %f  - #steps: %d - Current best PPX: %f)\n" %
-                                (ep, avg_ppx, avg_eval_loss, current_step, best_ppx))
-
-
-                    print("PPX after epoch #%d: %f (Loss: %f  - #steps: %d - Current best PPX: %f)" %
-                            (ep, avg_ppx, avg_eval_loss, current_step, best_ppx))
-
-                    if FLAGS.steps_per_validation == 0:
-
-                        # if we are not validating after some steps, we validate after each epoch,
-                        # therefore we must check the early stop here
-                        should_stop = check_early_stop(model=model, session=sess, loss=avg_eval_loss, flags=FLAGS)
-
+            if FLAGS.save_each_epoch:
                 # Save checkpoint
                 checkpoint_path = os.path.join(FLAGS.train_dir, FLAGS.model_name)
                 model.saver.save(sess, checkpoint_path, global_step=model.global_step)
 
-                if should_stop:
-                    break
+                # updating epoch number
+                sess.run(model.epoch_update_op)
+                ep_new = model.epoch.eval()
 
-                print("Epoch %d started..." % ep)
-                sess.run(model.samples_seen_reset_op)
+                print("\nValidating:\n")
 
-                if ep >= FLAGS.max_epochs:
-                    if not saved:
-                        # Save checkpoint
-                        checkpoint_path = os.path.join(FLAGS.train_dir, FLAGS.model_name)
-                        model.saver.save(sess, checkpoint_path, global_step=model.global_step)
-                    break
+                valid_ppx = run_eval(model=model, session=sess, data=valid_data)
+                best_ppx = model.best_eval_ppx.eval()
 
-                if FLAGS.start_decay > 0:
+                with codecs.open(FLAGS.best_models_dir + FLAGS.model_name + ".txt", "a", encoding="utf-8") as f:
+                    f.write("PPX after epoch #%d: %f (Current best PPX: %f)\n" % (ep, valid_ppx, best_ppx))
 
-                    if FLAGS.stop_decay > 0:
+                print("Validation PPX after epoch #%d: %f (Current best PPX: %f)\n" % (ep, valid_ppx, best_ppx))
 
-                        if FLAGS.start_decay <= model.epoch.eval() <= FLAGS.stop_decay:
-                            sess.run(model.learning_rate_decay_op)
+                if FLAGS.steps_per_validation == 0:
+                    # if we are not validating after some steps, we validate after each epoch,
+                    # therefore we must check the early stop here
+                    should_stop = check_early_stop(model=model, session=sess, ppx=valid_ppx, flags=FLAGS)
 
-                    else:
+            if ep + 1 >= FLAGS.max_epochs:
+                if not saved:
+                    # Save checkpoint
+                    checkpoint_path = os.path.join(FLAGS.train_dir, FLAGS.model_name)
+                    model.saver.save(sess, checkpoint_path, global_step=model.global_step)
+                break
 
-                        if FLAGS.start_decay <= model.epoch.eval():
-                            sess.run(model.learning_rate_decay_op)
+            if FLAGS.start_decay > 0:
 
-            if FLAGS.steps_per_validation > 0:
+                if FLAGS.stop_decay > 0:
 
-                if current_step % FLAGS.steps_per_validation == 0:
+                    if FLAGS.start_decay <= model.epoch.eval() <= FLAGS.stop_decay:
+                        sess.run(model.learning_rate_decay_op)
 
-                    print("\nValidating:\n")
+                else:
 
-                    avg_eval_loss, avg_ppx = run_eval(model=model, session=sess, data=valid_data,
-                                                      batch_size=FLAGS.batch_size)
+                    if FLAGS.start_decay <= model.epoch.eval():
+                        sess.run(model.learning_rate_decay_op)
 
-                    if avg_ppx > 1000.0:
-                        print('\n  eval: averaged perplexity > 1000.0')
-                    else:
-                        print('\n  eval: averaged perplexity %.8f' % avg_ppx)
-                    print('  eval: averaged loss %.8f\n' % avg_eval_loss)
+            if should_stop:
+                break
 
-                    should_stop = check_early_stop(model=model, session=sess, loss=avg_eval_loss, flags=FLAGS)
+            print("Epoch %d started..." % ep_new)
+            sess.run(model.samples_seen_reset_op)
 
-                    if should_stop:
-                        break
-
-            step_time += (time.time() - start_time) / FLAGS.steps_verbosity
-            words_time += (time.time() - start_time)
-
+        # when we ran the right number of epochs or we reached early stop we finish training
         print("\nTraining finished!!\n")
 
         if not nan_detected:
@@ -198,7 +184,7 @@ def train_lm(FLAGS=None):
 
             print("Final validation:")
 
-            avg_eval_loss, avg_ppx = run_eval(model=model, session=sess, data=valid_data, batch_size=FLAGS.batch_size)
+            avg_eval_loss, avg_ppx = run_eval(model=model, session=sess, data=valid_data)
 
             if avg_ppx > 1000.0:
                 print('\n  eval: averaged valid. perplexity > 1000.0')
@@ -208,7 +194,7 @@ def train_lm(FLAGS=None):
 
             print("\n##### Test Results: #####\n")
 
-            avg_test_loss, test_ppx = run_eval(model=model, session=sess, data=test_data, batch_size=FLAGS.batch_size)
+            avg_test_loss, test_ppx = run_eval(model=model, session=sess, data=test_data)
 
             if test_ppx > 1000.0:
                 print('\n  eval: averaged test perplexity > 1000.0')
@@ -219,7 +205,7 @@ def train_lm(FLAGS=None):
             sys.stdout.flush()
 
 
-def run_eval(model, session, data, batch_size):
+def run_eval(model, session, data, batch_size=1, num_steps=1):
     """
 
     Parameters
@@ -233,43 +219,29 @@ def run_eval(model, session, data, batch_size):
     -------
 
     """
-    eval_batch_size = len(data)
-    eval_steps = eval_batch_size / batch_size
-    last_step = eval_batch_size % batch_size
+    costs = 0.0
+    iters = 0
+    state = model.initial_state_train.eval()
+    for step, (x, y) in enumerate(reader.ptb_iterator(data, batch_size, num_steps)):
 
-    avg_eval_loss = 0.0
+        cost, state, _ = session.run([model.cost_valid, model.final_state_valid, model.valid_op],
+                                     {model.input_data_valid: x,
+                                      model.targets_valid: y,
+                                      model.initial_state_valid: state})
+        costs += cost
+        iters += model.num_steps
 
-    for i in xrange(eval_steps + 1):
-
-        b = batch_size
-        if i == eval_steps:
-            d = data[-last_step:]
-            eval_inputs, eval_targets, eval_mask, _ = model.get_train_batch(d, batch=last_step)
-        else:
-            d = data[(i * b):((i + 1) * b)]
-            eval_inputs, eval_targets, eval_mask, _ = model.get_train_batch(d, batch=b)
-
-        eval_cost, _ = model.train_step(session=session, lm_inputs=eval_inputs,
-                                        lm_targets=eval_targets,
-                                        mask=eval_mask, op=tf.no_op())
-
-        avg_eval_loss += eval_cost
-
-    avg_eval_loss = avg_eval_loss / (eval_steps + 1)
-
-    eval_ppx = math.exp(avg_eval_loss) if avg_eval_loss < 300 else float('inf')
-
-    return avg_eval_loss, eval_ppx
+    return numpy.exp(costs / iters)
 
 
-def check_early_stop(model, session, loss, flags):
+def check_early_stop(model, session, ppx, flags):
     """
 
     Parameters
     ----------
     model
     session
-    loss
+    ppx
     flags
 
     Returns
@@ -284,13 +256,14 @@ def check_early_stop(model, session, loss, flags):
     # check early stop - if early stop patience is greater than 0, test it
     if patience > 0:
 
-        if loss < model.best_eval_loss.eval():
-            session.run(model.best_eval_loss.assign(loss))
+        if ppx < model.best_eval_ppx.eval():
+            session.run(model.best_eval_ppx.assign(ppx))
             session.run(model.estop_counter_reset_op)
-            # Save checkpoint
-            print('\nSaving the best model so far...')
-            best_model_path = os.path.join(flags.best_models_dir, flags.model_name + '-best')
-            model.saver_best.save(session, best_model_path, global_step=model.global_step)
+            if flags.save_best_model:
+                # Save checkpoint
+                print('\nSaving the best model so far...')
+                best_model_path = os.path.join(flags.best_models_dir, flags.model_name + '-best')
+                model.saver_best.save(session, best_model_path, global_step=model.global_step)
 
         else:
             # if FLAGS.early_stop_after_epoch is equal to 0, it will monitor from the beginning
@@ -302,7 +275,7 @@ def check_early_stop(model, session, loss, flags):
                     print('\nEARLY STOP!\n')
                     stop = True
 
-        print('\n   best valid. loss: %.8f' % model.best_eval_loss.eval())
+        print('\n   best valid. ppx: %.8f' % model.best_eval_ppx.eval())
         print('early stop patience: %d - max %d\n' % (int(model.estop_counter.eval()), patience))
 
     return stop

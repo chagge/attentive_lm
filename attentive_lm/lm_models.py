@@ -12,6 +12,7 @@ from tensorflow.python.ops import array_ops
 import data_utils
 import cells
 import lm_ops
+import optimization_ops
 
 
 _SEED = 1234
@@ -22,6 +23,7 @@ class LMModel(object):
     def __init__(self,
                  is_training,
                  learning_rate=1.0,
+                 optimizer="sgd",
                  max_grad_norm=5,
                  num_layers=2,
                  use_lstm=True,
@@ -43,20 +45,15 @@ class LMModel(object):
 
         self.batch_size = batch_size = batch_size
         self.num_steps = num_steps = num_steps
-        size = hidden_size
         vocab_size = vocab_size
-        #
-        # self._input_data = tf.placeholder(tf.int32, [None, num_steps], name='input_data')
-        # self._targets = tf.placeholder(tf.int32, [None, num_steps], name='targets')
 
-        self.input_data = []
-        self.targets = []
-        self.mask = []
+        # training
+        self._input_data_train = tf.placeholder(tf.int32, [batch_size, num_steps])
+        self._targets_train = tf.placeholder(tf.int32, [batch_size, num_steps])
 
-        for i in xrange(num_steps):  # Last bucket is the biggest one.
-            self.input_data.append(tf.placeholder(tf.int32, shape=[None], name="input{0}".format(i)))
-            self.targets.append(tf.placeholder(tf.int32, shape=[None], name="target{0}".format(i)))
-            self.mask.append(tf.placeholder(tf.float32, shape=[None], name="mask{0}".format(i)))
+        # validation
+        self._input_data_valid = tf.placeholder(tf.int32, [1, 1])
+        self._targets_valid = tf.placeholder(tf.int32, [1, 1])
 
         hidden_projection = None
         if hidden_proj > 0:
@@ -65,7 +62,8 @@ class LMModel(object):
         self.cell = cells.build_lm_multicell_rnn(num_layers, hidden_size, proj_size, use_lstm=use_lstm,
                                                  hidden_projection=hidden_projection, dropout=dropout_rate)
 
-        # self._initial_state = tf.placeholder(tf.float32, [None], name='initial_state')
+        self._initial_state_train = self.cell.zero_state(batch_size, tf.float32)
+        self._initial_state_valid = self.cell.zero_state(1, tf.float32)
 
         # learning rate ops
         self.learning_rate = tf.Variable(float(learning_rate), trainable=False)
@@ -84,18 +82,16 @@ class LMModel(object):
         self.global_step = tf.Variable(0.0, trainable=False)
 
         # average loss ops
-        self.current_loss = tf.Variable(0.0, trainable=False)
+        self.current_ppx = tf.Variable(0.0, trainable=False)
         self.current_loss_update_op = None
-        self.avg_loss = tf.Variable(0.0, trainable=False)
-        self.avg_loss_update_op = self.avg_loss.assign(tf.div(self.current_loss, self.global_step))
 
         if early_stop_patience > 0:
-            self.best_eval_loss = tf.Variable(numpy.inf, trainable=False)
+            self.best_eval_ppx = tf.Variable(numpy.inf, trainable=False)
             self.estop_counter = tf.Variable(0, trainable=False)
             self.estop_counter_update_op = self.estop_counter.assign(self.estop_counter + 1)
             self.estop_counter_reset_op = self.estop_counter.assign(0)
         else:
-            self.best_eval_loss = None
+            self.best_eval_ppx = None
             self.estop_counter = None
             self.estop_counter_update_op = None
             self.estop_counter_reset_op = None
@@ -104,10 +100,11 @@ class LMModel(object):
 
         loss_function = None
 
+        out_proj = hidden_size
+        if hidden_proj > 0:
+            out_proj = hidden_proj
+
         with tf.device("/cpu:0"):
-            out_proj = hidden_size
-            if hidden_proj > 0:
-                out_proj = hidden_proj
             w = tf.get_variable("proj_w", [out_proj, vocab_size])
             w_t = tf.transpose(w)
             b = tf.get_variable("proj_b", [vocab_size])
@@ -131,33 +128,56 @@ class LMModel(object):
             # input come as one big tensor so we have to split it into a list of tensors to run the rnn cell
             embedding = tf.get_variable("embedding", [vocab_size, proj_size])
 
-            inputs = [tf.nn.embedding_lookup(embedding, i) for i in self.input_data]
-            # inputs = [tf.squeeze(input_, [1]) for input_ in inputs]
+            inputs_train = tf.split(1, num_steps, tf.nn.embedding_lookup(embedding, self._input_data_train))
+            inputs_train = [tf.squeeze(input_, [1]) for input_ in inputs_train]
+
+            inputs_valid = tf.split(1, 1, tf.nn.embedding_lookup(embedding, self._input_data_valid))
+            inputs_valid = [tf.squeeze(input_, [1]) for input_ in inputs_valid]
 
         with tf.variable_scope("RNN", initializer=initializer):
 
             if attentive:
-                outputs, state, _ = lm_ops.apply_attentive_lm(
-                    self.cell, inputs, attn_size=hidden_size, projection_attention_f=projection_attention_f,
+                outputs_train, state_train, _ = lm_ops.apply_attentive_lm(
+                    self.cell, inputs_train, projection_attention_f=projection_attention_f,
+                    initializer=initializer, dtype=tf.float32
+                )
+
+                outputs_valid, state_valid, _ = lm_ops.apply_attentive_lm(
+                    self.cell, inputs_valid, projection_attention_f=projection_attention_f,
                     initializer=initializer, dtype=tf.float32
                 )
 
             else:
-               outputs, state = lm_ops.apply_lm(self.cell, inputs, dtype=tf.float32)
+               outputs_train, state_train = lm_ops.apply_lm(self.cell, inputs_train, dtype=tf.float32)
+               outputs_valid, state_valid = lm_ops.apply_lm(self.cell, inputs_valid, dtype=tf.float32)
 
             if sampled_softmax is False:
-                outputs = [tf.nn.xw_plus_b(o, self.output_projection[0], self.output_projection[1]) for o in outputs]
+                output_train = tf.reshape(tf.concat(1, outputs_train), [-1, out_proj])
+                logits_train = tf.nn.xw_plus_b(output_train,
+                                         self.output_projection[0],
+                                         self.output_projection[1])
 
-        # TODO: check here
-        loss = seq2seq.sequence_loss_by_example(outputs,
-                                                self.targets,
-                                                self.mask,
-                                                vocab_size,
-                                                softmax_loss_function=loss_function)
+                output_valid = tf.reshape(tf.concat(1, outputs_valid), [-1, out_proj])
+                logits_valid = tf.nn.xw_plus_b(output_valid,
+                                               self.output_projection[0],
+                                               self.output_projection[1])
+            else:
+                logits_train = tf.reshape(tf.concat(1, outputs_train), [-1, out_proj])
+                logits_valid = tf.reshape(tf.concat(1, outputs_valid), [-1, out_proj])
 
-        b_size = array_ops.shape(self.input_data[0])[0]
-        self._cost = cost = tf.reduce_sum(loss) / tf.to_float(b_size)
-        self._final_state = state
+        loss_train = seq2seq.sequence_loss_by_example([logits_train],
+                                                [tf.reshape(self._targets_train, [-1])],
+                                                [tf.ones([batch_size * num_steps])])
+        loss_valid = seq2seq.sequence_loss_by_example([logits_valid],
+                                                      [tf.reshape(self._targets_valid, [-1])],
+                                                      [tf.ones([batch_size * num_steps])])
+
+        b_size = array_ops.shape(self.input_data_train)[0]
+        self._cost_train = cost = tf.reduce_sum(loss_train) / batch_size
+        self._final_state_train = state_train
+
+        self._cost_valid = tf.reduce_sum(loss_valid) / batch_size
+        self._final_state_valid = state_valid
 
         if not is_training:
             return
@@ -165,100 +185,58 @@ class LMModel(object):
         tvars = tf.trainable_variables()
         grads, _ = tf.clip_by_global_norm(tf.gradients(cost, tvars),
                                           max_grad_norm)
-        optimizer = tf.train.GradientDescentOptimizer(self.lr)
-        self._train_op = optimizer.apply_gradients(zip(grads, tvars), global_step=self.global_step)
+
+        opt = optimization_ops.get_optimizer(optimizer, learning_rate)
+        self._train_op = opt.apply_gradients(zip(grads, tvars), global_step=self.global_step)
+        self._valid_op = tf.no_op()
 
         self.saver = tf.train.Saver(tf.all_variables())
         self.saver_best = tf.train.Saver(tf.all_variables())
 
+    @property
+    def input_data_train(self):
+        return self._input_data_train
 
     @property
-    def cost(self):
-        return self._cost
+    def targets_train(self):
+        return self._targets_train
 
     @property
-    def final_state(self):
-        return self._final_state
+    def initial_state_train(self):
+        return self._initial_state_train
 
     @property
-    def lr(self):
-        return self.learning_rate
+    def cost_train(self):
+        return self._cost_train
+
+    @property
+    def final_state_train(self):
+        return self._final_state_train
 
     @property
     def train_op(self):
         return self._train_op
 
-    def get_train_batch(self, data, batch=None):
-        """
-        """
-        max_n_steps = self.num_steps
-        batch_inputs, batch_targets = [], []
+    @property
+    def input_data_valid(self):
+        return self._input_data_valid
 
-        n_target_words = 0
+    @property
+    def targets_valid(self):
+        return self._targets_valid
 
-        if batch is None:
-            batch = self.batch_size
+    @property
+    def initial_state_valid(self):
+        return self._initial_state_valid
 
-        # Get a random batch of encoder and decoder inputs from data,
-        # pad them if needed, reverse encoder inputs and add GO to decoder.
-        for _ in xrange(batch):
-            encoder_input = random.choice(data)
+    @property
+    def cost_valid(self):
+        return self._cost_valid
 
-            # Encoder inputs are padded and then reversed.
-            encoder_pad = [data_utils.PAD_ID] * (max_n_steps - len(encoder_input))
-            batch_inputs.append(list(encoder_input + encoder_pad))
+    @property
+    def final_state_valid(self):
+        return self._final_state_valid
 
-            n_target_words += len(encoder_input)
-
-            # Decoder inputs get an extra "GO" symbol, and are padded then.
-            batch_targets.append([data_utils.GO_ID] + list(encoder_input + encoder_pad))
-
-        # Now we create batch-major vectors from the data selected above.
-        batch_lm_inputs, batch_lm_targets, batch_weights = [], [], []
-
-        for length_idx in xrange(self.num_steps):
-            batch_lm_inputs.append(
-                    numpy.array([batch_inputs[batch_idx][length_idx]
-                              for batch_idx in xrange(batch)], dtype=numpy.int32))
-                              # for batch_idx in xrange(self.batch_size)], dtype=numpy.int32))
-
-        # Batch decoder inputs are re-indexed decoder_inputs, we create weights.
-        for length_idx in xrange(self.num_steps):
-            batch_lm_targets.append(
-                    numpy.array([batch_targets[batch_idx][length_idx]
-                              for batch_idx in xrange(batch)], dtype=numpy.int32))
-                              # for batch_idx in xrange(self.batch_size)], dtype=numpy.int32))
-
-            # batch_weight = numpy.ones(self.batch_size, dtype=numpy.float32)
-            batch_weight = numpy.ones(batch, dtype=numpy.float32)
-            # for batch_idx in xrange(self.batch_size):
-            for batch_idx in xrange(batch):
-                # We set weight to 0 if the corresponding target is a PAD symbol.
-                # The corresponding target is decoder_input shifted by 1 forward.
-                if length_idx < self.num_steps - 1:
-                    target = batch_targets[batch_idx][length_idx + 1]
-                if length_idx == self.num_steps - 1 or target == data_utils.PAD_ID:
-                    batch_weight[batch_idx] = 0.0
-            batch_weights.append(batch_weight)
-
-        return batch_lm_inputs, batch_lm_targets, batch_weights, n_target_words
-
-    def train_step(self, session, lm_inputs, lm_targets, mask, num_steps=None, op=None):
-
-        if op is None:
-            op = self.train_op
-
-        if num_steps is None:
-            num_steps = self.num_steps
-
-        input_feed = {}
-        for l in xrange(num_steps):
-            input_feed[self.input_data[l].name] = lm_inputs[l]
-            input_feed[self.targets[l].name] = lm_targets[l]
-            input_feed[self.mask[l].name] = mask[l]
-
-        output_feed = [self.cost, self.final_state, op]
-
-        cost_, state_, _ = session.run(output_feed, feed_dict=input_feed)
-
-        return cost_, state_
+    @property
+    def valid_op(self):
+        return self._valid_op

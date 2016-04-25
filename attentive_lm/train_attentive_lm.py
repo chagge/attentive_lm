@@ -7,7 +7,7 @@ import content_functions
 flags = tf.flags
 logging = tf.logging
 
-model_name = "lm_lstm_2lr_emb_512_hid512_proj256_en10000_maxNrm1_adam_0-1_dropout-off_input-feed-off-data-PTB"
+model_name = "att_lstm_2lr_emb_512_hid512_proj256_en10000_maxNrm1_adam_0-2_dropout-off_input-feed-off-data-PTB"
 dir = "/home/gian/"
 
 flags.DEFINE_string('model_name', model_name + ".ckpt", 'Model name')
@@ -34,20 +34,20 @@ flags.DEFINE_integer("num_layers", 2, "Number of hidden layers to use within the
 flags.DEFINE_boolean('use_lstm', True, 'Whether to use LSTM units. Default to False.')
 flags.DEFINE_integer('proj_size', 512, 'Size of words projection.')
 flags.DEFINE_integer("hidden_size", 512, "Number of hidden units to use within the hidden layers.")
-flags.DEFINE_integer('hidden_proj', 256, 'Size of hidden projection projection. Defaults to 0 (no projection).')
+flags.DEFINE_integer('hidden_proj', 256, 'Size of hidden projection projection. Default to 0 (no projection).')
 
-flags.DEFINE_boolean('attentive', False, 'Whether to pay attention on the outputs. Default to False.')
+flags.DEFINE_boolean('attentive', True, 'Whether to pay attention on the outputs. Default to False.')
 flags.DEFINE_string('projection_attention', content_functions.TYPE_2, 'Which attention function to apply to the outputs. Default to None.')
 
 flags.DEFINE_float("max_grad_norm", 1.0, "Maximum L2 norm of the gradients before clipping.")
 
-flags.DEFINE_integer("max_epochs", 100, "Maximum nnumber of epochs to train the LM.")
-flags.DEFINE_integer("batch_size", 128, "Mini-batch size.")
-flags.DEFINE_integer("num_steps", 30, "Maximum number of steps to unroll the network.")
+flags.DEFINE_integer("max_epochs", 300, "Maximum nnumber of epochs to train the LM.")
+flags.DEFINE_integer("batch_size", 20, "Mini-batch size.")
+flags.DEFINE_integer("num_steps", 35, "Maximum number of steps to unroll the network.")
 flags.DEFINE_float("dropout_rate", 0.0, "The dropout rate to be applied to the LM when training.")
 
 # verbosity and checkpoints
-flags.DEFINE_integer('steps_per_checkpoint', 500, 'How many training steps to do per checkpoint. Set to 0 to save only after each epoch.')
+flags.DEFINE_integer('steps_per_checkpoint', 0, 'How many training steps to do per checkpoint. Set to 0 to save only after each epoch.')
 flags.DEFINE_integer('steps_per_validation', 0, 'How many training steps to do between each validation.')
 flags.DEFINE_integer('steps_verbosity', 10, 'How many training steps to do between each information print.')
 
@@ -56,7 +56,7 @@ flags.DEFINE_integer('lr_rate_patience', 3, 'How many training steps to monitor.
 flags.DEFINE_integer('early_stop_patience', 10, 'How many training steps to monitor.')
 flags.DEFINE_integer('early_stop_after_epoch', 1, 'Start monitoring early_stop after this epoch.')
 flags.DEFINE_boolean('eval_after_each_epoch', True, 'Run eval after each epoch.')
-flags.DEFINE_boolean('save_each_epoch', False, 'Whether ot nor to save at the end of each epoch.')
+flags.DEFINE_boolean('save_each_epoch', True, 'Whether ot nor to save at the end of each epoch.')
 flags.DEFINE_boolean('save_best_model', True, 'Set to True to save the best model even if not using early stop.')
 
 FLAGS = flags.FLAGS
