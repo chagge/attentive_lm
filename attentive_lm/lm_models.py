@@ -62,6 +62,8 @@ class LMModel(object):
         self.cell = cells.build_lm_multicell_rnn(num_layers, hidden_size, proj_size, use_lstm=use_lstm,
                                                  hidden_projection=hidden_projection, dropout=dropout_rate)
 
+        self.dropout_feed = tf.placeholder(tf.float32, name="dropout_rate")
+
         self._initial_state_train = self.cell.zero_state(batch_size, tf.float32)
         self._initial_state_valid = self.cell.zero_state(1, tf.float32)
 
@@ -83,6 +85,7 @@ class LMModel(object):
 
         # average loss ops
         self.current_ppx = tf.Variable(0.0, trainable=False)
+        self.current_loss = tf.Variable(0.0, trainable=False)
         self.current_loss_update_op = None
 
         if early_stop_patience > 0:
@@ -139,17 +142,22 @@ class LMModel(object):
             if attentive:
                 outputs_train, state_train, _ = lm_ops.apply_attentive_lm(
                     self.cell, inputs_train, projection_attention_f=projection_attention_f,
-                    initializer=initializer, dtype=tf.float32
+                    dropout=self.dropout_feed, initializer=initializer, dtype=tf.float32
                 )
 
                 outputs_valid, state_valid, _ = lm_ops.apply_attentive_lm(
                     self.cell, inputs_valid, projection_attention_f=projection_attention_f,
-                    initializer=initializer, dtype=tf.float32
+                    dropout=self.dropout_feed, initializer=initializer, dtype=tf.float32
                 )
 
             else:
-               outputs_train, state_train = lm_ops.apply_lm(self.cell, inputs_train, dtype=tf.float32)
-               outputs_valid, state_valid = lm_ops.apply_lm(self.cell, inputs_valid, dtype=tf.float32)
+               outputs_train, state_train = lm_ops.apply_lm(
+                   self.cell, inputs_train, dropout=self.dropout_feed, dtype=tf.float32
+               )
+
+               outputs_valid, state_valid = lm_ops.apply_lm(
+                   self.cell, inputs_valid, dropout=self.dropout_feed, dtype=tf.float32
+               )
 
             if sampled_softmax is False:
                 output_train = tf.reshape(tf.concat(1, outputs_train), [-1, out_proj])

@@ -8,7 +8,7 @@ _SEED = 1234
 
 
 def apply_attentive_lm(cell, inputs, projection_attention_f=None, initializer=None,
-                       dtype=tf.float32):
+                       dropout=None, dtype=tf.float32):
     """
 
     Parameters
@@ -23,6 +23,11 @@ def apply_attentive_lm(cell, inputs, projection_attention_f=None, initializer=No
     """
 
     assert projection_attention_f is not None
+
+    if dropout is not None:
+
+        for c in cell._cells:
+            c.input_keep_prob = 1.0 - dropout
 
     if initializer is None:
         initializer = tf.random_uniform_initializer(minval=-0.1, maxval=0.1, seed=_SEED)
@@ -125,7 +130,8 @@ def decoder_output_attention(decoder_hidden, attn_size, decoder_attention_f, ini
     # ds is (?, decoder_size)
     return ds
 
-def apply_lm(cell, inputs, dtype=tf.float32):
+
+def apply_lm(cell, inputs, dropout=None, dtype=tf.float32):
     """
 
     Parameters
@@ -138,6 +144,10 @@ def apply_lm(cell, inputs, dtype=tf.float32):
     -------
 
     """
+    if dropout is not None:
+
+        for c in cell._cells:
+            c.input_keep_prob = 1.0 - dropout
 
     cell_outputs = []
     cell_state = None
