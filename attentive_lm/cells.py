@@ -72,13 +72,6 @@ class GRUCell(RNNCell):
                 c = tf.tanh(linear([inputs, r * state], self._num_units, True))
             new_h = u * state + (1 - u) * c
 
-            if self._num_proj is not None:
-                concat_w_proj = rnn_cell._get_concat_variable(
-                    "W_P", [self._num_units, self._num_proj],
-                    dtype, self._num_proj_shards)
-
-                new_h = math_ops.matmul(new_h, concat_w_proj)
-
         return new_h, new_h
 
 
@@ -299,6 +292,9 @@ def build_lm_multicell_rnn(num_layers, hidden_size, word_proj_size, use_lstm=Tru
 
     else:
         print("I'm building the model with GRU cells")
+        if hidden_projection is not None:
+            print("I'm ignoring the projection size for GRUs.")
+            hidden_projection = None
         cell_class = GRUCell
 
     initializer = tf.random_uniform_initializer(minval=-0.1, maxval=0.1, seed=1234)

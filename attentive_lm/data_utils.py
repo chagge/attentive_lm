@@ -2,8 +2,8 @@
 """Utilities for downloading data from WMT, tokenizing, vocabularies."""
 from __future__ import print_function
 import collections
-import os
-import copy
+import random
+import numpy
 import re
 import sys
 from tensorflow.python.platform import gfile
@@ -216,9 +216,87 @@ def read_lm_data(source_path, FLAGS=None, max_size=None):
                     sys.stdout.flush()
 
                 source_ids = [int(x) for x in source.split()]
+                source_ids.append(EOS_ID)
 
                 data_set.append(source_ids)
 
                 source = source_file.readline()
 
     return data_set
+
+
+def data_iterator(raw_data, batch_size, num_steps):
+    """Iterate on the raw PTB data.
+
+    This generates batch_size pointers into the raw PTB data, and allows
+    minibatch iteration along these pointers.
+
+    Args:
+      raw_data: one of the raw data outputs from ptb_raw_data.
+      batch_size: int, the batch size.
+      num_steps: int, the number of unrolls.
+
+    Yields:
+      Pairs of the batched data, each a matrix of shape [batch_size, num_steps].
+      The second element of the tuple is the same data time-shifted to the
+      right by one.
+
+    Raises:
+      ValueError: if batch_size or num_steps are too high.
+    """
+    # raw_data.sort(key=lambda s: len(s))
+    data_len = len(raw_data)
+    numpy.random.shuffle(raw_data)
+
+    epoch_len = data_len // batch_size
+
+    if epoch_len == 0:
+        raise ValueError("epoch_size == 0, decrease batch_size or num_steps")
+
+    for i in range(epoch_len+1):
+        batch_inputs, batch_targets = [], []
+
+        n_target_words = 0
+
+        inputs = raw_data[(i*batch_size):(i+1)*batch_size]
+
+        # Get a random batch of encoder and decoder inputs from data,
+        # pad them if needed, reverse encoder inputs and add GO to decoder.
+        for encoder_input in inputs:
+
+            n_target_words += len(encoder_input)
+
+            encoder_input = [GO_ID] + encoder_input
+            # Encoder inputs are padded and then reversed.
+            encoder_pad = [PAD_ID] * (num_steps - len(encoder_input))
+            encoder_input = list(encoder_input + encoder_pad)
+            batch_inputs.append(encoder_input)
+
+            # Decoder inputs get an extra "GO" symbol, and are padded then.
+            batch_targets.append(encoder_input[1:num_steps+1] + [0])
+
+        # Now we create batch-major vectors from the data selected above.
+        batch_lm_inputs, batch_lm_targets, batch_weights = [], [], []
+
+        for length_idx in xrange(num_steps):
+            batch_lm_inputs.append(
+                numpy.array([batch_inputs[batch_idx][length_idx]
+                             for batch_idx in xrange(len(batch_inputs))], dtype=numpy.int32))
+
+        for length_idx in xrange(num_steps):
+            batch_lm_targets.append(
+                numpy.array([batch_targets[batch_idx][length_idx]
+                             for batch_idx in xrange(len(batch_targets))], dtype=numpy.int32))
+
+            batch_weight = numpy.ones(len(batch_targets), dtype=numpy.float32)
+            # for batch_idx in xrange(self.batch_size):
+            for batch_idx in xrange(len(batch_targets)):
+                # We set weight to 0 if the corresponding target is a PAD symbol.
+                # The corresponding target is decoder_input shifted by 1 forward.
+                if length_idx < num_steps - 1:
+                    target = batch_targets[batch_idx][length_idx + 1]
+                if length_idx == num_steps - 1 or target == PAD_ID:
+                    batch_weight[batch_idx] = 0.0
+            batch_weights.append(batch_weight)
+
+        yield (batch_lm_inputs, batch_lm_targets, batch_weights, n_target_words)

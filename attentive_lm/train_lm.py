@@ -1,6 +1,6 @@
 from __future__ import print_function
 import tensorflow as tf
-from train_ops import train_lm
+from train_ops import train_lm_traverse
 import content_functions
 
 
@@ -63,7 +63,7 @@ FLAGS = flags.FLAGS
 
 
 def main(unused_args):
-    train_lm(FLAGS)
+    train_lm_traverse(FLAGS)
 
 
 if __name__ == "__main__":

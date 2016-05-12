@@ -20,6 +20,8 @@ def get_optimizer(name='sgd', lr_rate=0.1, decay=0.9):
         optimizer = tf.train.GradientDescentOptimizer(lr_rate)
     elif name is 'adagrad':
         optimizer = tf.train.AdagradOptimizer(lr_rate)
+    elif name is 'adadelta':
+        optimizer = tf.train.AdadeltaOptimizer(lr_rate)
     elif name is 'adam':
         optimizer = tf.train.AdamOptimizer(lr_rate, epsilon=1e-8)
     elif name is 'rmsprop':
