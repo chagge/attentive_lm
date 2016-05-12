@@ -176,8 +176,7 @@ def _output_with_attention(cell_output, output_size, decoder_hidden, attn_size,
         else:
             output = _output_form_concat(cell_output, ds, output_size, initializer=initializer)
 
-        # output = tf.tanh(output)
-        output = nn_ops.relu(output)
+        output = tf.tanh(output)
 
     return output
 
